@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -89,7 +89,23 @@ jobs:
 
       - name: Upload portable build
         uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: KeePassXC-ROR-win64
           path: dist
           if-no-files-found: error
+
+      - name: Zip portable build
+        shell: pwsh
+        run: Compress-Archive -Path dist\* -DestinationPath KeePassXC-ROR-win64.zip -CompressionLevel Optimal
+
+      - name: Publish as release asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "ror-build-${{ github.run_number }}" KeePassXC-ROR-win64.zip \
+            --title "KeePassXC ROR (PR #12971) build ${{ github.run_number }}" \
+            --notes "Temporary portable Windows build with Related Origin Requests support (KeePassXC PR #12971). Unsigned binary, built from source in GitHub Actions." \
+            --prerelease
