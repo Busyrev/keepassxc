@@ -49,7 +49,10 @@ jobs:
 
       - name: Build
         shell: msys2 {0}
-        run: cmake --build build -j"$(nproc)"
+        run: |
+          cmake --build build -j"$(nproc)"
+          # Build the proxy explicitly so it cannot be skipped by the default target
+          cmake --build build --target keepassxc-proxy -j"$(nproc)"
 
       - name: Package portable build
         shell: msys2 {0}
@@ -58,8 +61,19 @@ jobs:
           rm -rf dist
           mkdir -p dist
           cp build/src/keepassxc.exe dist/
-          if [ -f build/src/keepassxc-proxy.exe ]; then cp build/src/keepassxc-proxy.exe dist/; fi
-          if [ -f build/src/keepassxc-cli.exe ]; then cp build/src/keepassxc-cli.exe dist/; fi
+
+          PROXY=$(find build -type f -iname 'keepassxc-proxy*.exe' | head -n 1)
+          CLI=$(find build -type f -iname 'keepassxc-cli*.exe' | head -n 1)
+          echo "proxy: ${PROXY:-NOT FOUND}"
+          echo "cli:   ${CLI:-NOT FOUND}"
+
+          if [ -z "$PROXY" ]; then
+            echo "ERROR: keepassxc-proxy.exe was not built. Candidates in build tree:"
+            find build -iname '*proxy*' | head -n 50 || true
+            exit 1
+          fi
+          cp "$PROXY" dist/
+          if [ -n "$CLI" ]; then cp "$CLI" dist/; fi
 
           DEPLOYQT=$(command -v windeployqt || command -v windeployqt6)
           "$DEPLOYQT" --release --no-translations --no-system-d3d-compiler --no-opengl-sw --compiler-runtime dist/keepassxc.exe
@@ -83,6 +97,25 @@ jobs:
           for d in share translations wordlists; do
             if [ -d "build/$d" ]; then cp -r "build/$d" dist/; fi
           done
+
+          # Hard verification: proxy present and all MinGW deps resolvable from dist
+          if [ ! -f dist/keepassxc-proxy.exe ]; then
+            echo "ERROR: dist/keepassxc-proxy.exe missing"
+            exit 1
+          fi
+
+          missing=0
+          for f in dist/keepassxc.exe dist/keepassxc-proxy.exe; do
+            for name in $(objdump -p "$f" | awk '/DLL Name:/{print $3}'); do
+              if [ -f "/mingw64/bin/$name" ] && [ ! -f "dist/$name" ]; then
+                echo "MISSING DEPENDENCY: $name (needed by $f)"
+                missing=1
+              fi
+            done
+          done
+          if [ "$missing" != "0" ]; then
+            exit 1
+          fi
 
           echo "--- dist contents ---"
           ls -la dist
