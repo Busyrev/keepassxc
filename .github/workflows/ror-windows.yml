@@ -1,0 +1,93 @@
+name: Build KeePassXC (ROR, Windows)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout KeePassXC (PR #12971, Related Origin Requests)
+        uses: actions/checkout@v4
+        with:
+          repository: keepassxreboot/keepassxc
+          ref: 19e2ff307a5a27ad55e56ebc9ad61ea445931629
+          fetch-depth: 1
+
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            git
+            make
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-qt6-base
+            mingw-w64-x86_64-qt6-svg
+            mingw-w64-x86_64-qt6-tools
+            mingw-w64-x86_64-libbotan
+            mingw-w64-x86_64-zlib
+            mingw-w64-x86_64-minizip
+            mingw-w64-x86_64-argon2
+            mingw-w64-x86_64-qrencode
+
+      - name: Configure
+        shell: msys2 {0}
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DWITH_TESTS=OFF \
+            -DKPXC_FEATURE_DOCS=OFF
+
+      - name: Build
+        shell: msys2 {0}
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Package portable build
+        shell: msys2 {0}
+        run: |
+          set -e
+          rm -rf dist
+          mkdir -p dist
+          cp build/src/keepassxc.exe dist/
+          if [ -f build/src/keepassxc-proxy.exe ]; then cp build/src/keepassxc-proxy.exe dist/; fi
+          if [ -f build/src/keepassxc-cli.exe ]; then cp build/src/keepassxc-cli.exe dist/; fi
+
+          DEPLOYQT=$(command -v windeployqt || command -v windeployqt6)
+          "$DEPLOYQT" --release --no-translations --no-system-d3d-compiler --no-opengl-sw dist/keepassxc.exe
+
+          for i in 1 2 3 4 5; do
+            before=$(find dist -type f | wc -l)
+            find dist -type f \( -name '*.exe' -o -name '*.dll' \) -print0 |
+            while IFS= read -r -d '' f; do
+              ldd "$f" 2>/dev/null | awk '{print $3}' | grep '^/mingw64/bin/' |
+              while read -r dll; do
+                base=$(basename "$dll")
+                if [ ! -f "dist/$base" ]; then cp "$dll" "dist/$base"; fi
+              done
+            done
+            after=$(find dist -type f | wc -l)
+            echo "dependency pass $i: $before -> $after files"
+            if [ "$before" = "$after" ]; then break; fi
+          done
+
+          for d in share translations wordlists; do
+            if [ -d "build/$d" ]; then cp -r "build/$d" dist/; fi
+          done
+
+          ls -la dist
+
+      - name: Upload portable build
+        uses: actions/upload-artifact@v4
+        with:
+          name: KeePassXC-ROR-win64
+          path: dist
+          if-no-files-found: error
